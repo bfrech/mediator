@@ -1,14 +1,20 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
+	"github.com/hyperledger/aries-framework-go/component/storageutil/mem"
 	"github.com/hyperledger/aries-framework-go/pkg/client/didexchange"
-	"github.com/hyperledger/aries-framework-go/pkg/client/outofband"
+	"github.com/hyperledger/aries-framework-go/pkg/client/mediator"
+	"github.com/hyperledger/aries-framework-go/pkg/client/outofbandv2"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/service"
-	outofband2 "github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/outofband"
+	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/decorator"
+	"github.com/hyperledger/aries-framework-go/pkg/didcomm/transport"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/transport/ws"
 	"github.com/hyperledger/aries-framework-go/pkg/framework/aries"
+	"github.com/hyperledger/aries-framework-go/pkg/kms"
 	"net/http"
 )
 
@@ -16,10 +22,12 @@ func main() {
 
 	didExchangeClient, oobClient, err := createDIDClient(5000)
 	if err != nil {
-		fmt.Println("Failed to create DID Client for Router")
+		panic(err)
 	}
 
 	http.Handle("/invitation", &InvitationHandler{DIDExchangeClient: *didExchangeClient, OOBClient: *oobClient})
+
+	//http.Handle("/invitation", &InvitationHandler{DIDExchangeClient: *didExchangeClient, OOBV2Client: *oobClient})
 	http.ListenAndServe(":5000", nil)
 
 }
@@ -28,135 +36,113 @@ type DIDExchangeClient struct {
 	didexchange.Client
 }
 
-type OOBClient struct {
-	outofband.Client
+type OOBV2Client struct {
+	outofbandv2.Client
 }
 
-func createDIDClient(port int32) (*DIDExchangeClient, *OOBClient, error) {
+type InvitationHandler struct {
+	DIDExchangeClient DIDExchangeClient
+	OOBClient         OOBV2Client
+}
 
-	ngrokAddress := "8574-84-63-28-137.eu.ngrok.io"
+func createDIDClient(port int32) (*DIDExchangeClient, *OOBV2Client, error) {
+
+	ngrokAddress := "86b9-84-63-28-137.eu.ngrok.io"
 	address := fmt.Sprintf("localhost:%d", port+1)
 	inbound, err := ws.NewInbound(address, "ws://"+ngrokAddress, "", "")
 
-	mediaTypeProfiles := []string{"didcomm/v2", "didcomm/aip2;env=rfc587", "didcomm/aip2;env=rfc19", "didcomm/aip1"}
+	//mediaTypeProfiles := []string{"didcomm/v2", "didcomm/aip2;env=rfc587", "didcomm/aip2;env=rfc19", "didcomm/aip1"}
 
+	// Router Setup
 	framework, err := aries.New(
 		aries.WithInboundTransport(inbound),
 		aries.WithOutboundTransports(ws.NewOutbound()),
-		//aries.WithStoreProvider(mem.NewProvider()),
-		//aries.WithProtocolStateStoreProvider(mem.NewProvider()),
-		//aries.WithKeyType(kms.ED25519),
-		//aries.WithKeyAgreementType(kms.NISTP384ECDHKW),
-		aries.WithMediaTypeProfiles(mediaTypeProfiles),
 		aries.WithTransportReturnRoute("all"),
+		aries.WithMediaTypeProfiles([]string{transport.MediaTypeDIDCommV2Profile}),
+		aries.WithKeyAgreementType(kms.NISTP521ECDHKWType),
+		aries.WithStoreProvider(mem.NewProvider()),
+		aries.WithProtocolStateStoreProvider(mem.NewProvider()),
 	)
 	if err != nil {
-		fmt.Println("Failed to create framework")
+		panic(err)
 	}
 
 	ctx, err := framework.Context()
 	if err != nil {
-		fmt.Println("Failed to create framework context")
+		panic("Failed to create framework context")
 	}
 
 	fmt.Println("Context created successfully")
 	fmt.Println(ctx.ServiceEndpoint())
 
 	// DID Exchange Client: create new Invitation
-	didExchangeClient, err := didexchange.New(ctx)
+	routerDIDs, err := didexchange.New(ctx)
 	if err != nil {
-		fmt.Println("Failed to create DIDExchange Client")
+		panic(err)
 	}
 
-	// Out Of Band Client
-	outOfBandClient, err := outofband.New(ctx)
+	// Create router Client
+	routerClient, err := mediator.New(ctx)
 	if err != nil {
-		fmt.Println("Failed to create OutOfBand Controller")
+		panic(err)
+	}
+
+	// Out Of Band 2 Client
+	outOfBandv2Client, err := outofbandv2.New(ctx)
+	if err != nil {
+		panic(err)
 	}
 	fmt.Println("Created Out Of Band Controller")
 
-	// Route Exchange Client
-
-	/*
-		routeExchangeClient, err := mediator.New(ctx)
-		if err != nil {
-			fmt.Printf("Failed to create route client: %w", err)
-		}
-	*/
-
+	// Register DIDs and Route Exchange client
 	events := make(chan service.DIDCommAction)
-
-	// Register DIDExchange Client and Route Exchange client
-
-	/*
-		err = routeExchangeClient.RegisterActionEvent(events)
-		if err != nil {
-			fmt.Printf("Failed to register for action events on the routing client: %w", err)
-		}
-	*/
-
-	err = didExchangeClient.RegisterActionEvent(events)
+	err = routerDIDs.RegisterActionEvent(events)
 	if err != nil {
-		fmt.Printf("Failed to register for action events on the DID Exchange client: %w", err)
+		panic(err)
+	}
+
+	err = routerClient.RegisterActionEvent(events)
+	if err != nil {
+		panic(err)
 	}
 
 	go func() {
 		service.AutoExecuteActionEvent(events)
 	}()
 
-	return &DIDExchangeClient{Client: *didExchangeClient}, &OOBClient{Client: *outOfBandClient}, nil
-}
-
-type InvitationHandler struct {
-	DIDExchangeClient DIDExchangeClient
-	OOBClient         OOBClient
+	return &DIDExchangeClient{Client: *routerDIDs}, &OOBV2Client{Client: *outOfBandv2Client}, nil
 }
 
 func (handler *InvitationHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	switch request.Method {
 	case http.MethodGet:
 
-		// Router creates Route Request Message (Create actual request)
+		// Create route-request message
+		routeRequest, err := json.Marshal(mediator.NewRequest())
+		if err != nil {
+			panic(err)
+		}
 
-		/*
-			routeRequest, err := json.Marshal(mediator.NewRequest())
-			if err != nil {
-				fmt.Println("Failed to create routeRequest")
-			}
-			fmt.Printf("Created Route Request %w", routeRequest)
-
-		*/
-
-		// Create DIDExchange request
-		/*
-			invitation, err := handler.DIDExchangeClient.CreateInvitation("Router Invitation")
-			if err != nil {
-				fmt.Printf("Failed to create new Invitation with DIDExchangeClient: %w", err)
-			}
-			fmt.Printf("Created DIDExchange Invitation")
-
-				inv, err := json.Marshal(invitation)
-				if err != nil {
-					fmt.Printf("Failed to create Json from DIDEchange Invitation")
-				}
-		*/
-
-		//invitation, err := handler.DIDClient.CreateInvitation("Router Invitation")
 		oobInvitation, err := handler.OOBClient.CreateInvitation(
-			nil,
-			outofband.WithLabel("Router Invitation"),
-			outofband.WithAccept(outofband2.MediaTypeProfileDIDCommV2, outofband2.MediaTypeProfileAIP2RFC587, outofband2.MediaTypeProfileDIDCommAIP2RFC19, outofband2.MediaTypeProfileDIDCommAIP1),
+			outofbandv2.WithLabel("Router"),
+			outofbandv2.WithFrom("RouterDID"),
+			outofbandv2.WithAttachments(&decorator.AttachmentV2{
+				ID: uuid.New().String(),
+				Data: decorator.AttachmentData{
+					Base64: base64.StdEncoding.EncodeToString(routeRequest),
+				},
+			}),
 		)
 
 		if err != nil {
-			fmt.Printf("Failed to create Invitation from Router: %w", err)
+			panic(err)
 		}
 
-		fmt.Printf("Created Out of Band Invitation: %s", oobInvitation)
+		fmt.Printf("Created Out of Band Invitation")
 
 		response, err := json.Marshal(oobInvitation)
 		if err != nil {
-			fmt.Printf("Failed to get Response: %w", err)
+			panic(err)
 		}
 		writer.Header().Set("Content-Type", "application/json")
 		writer.Write(response)
