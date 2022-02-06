@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/google/uuid"
@@ -9,23 +8,29 @@ import (
 	"github.com/hyperledger/aries-framework-go/pkg/client/didexchange"
 	"github.com/hyperledger/aries-framework-go/pkg/client/mediator"
 	"github.com/hyperledger/aries-framework-go/pkg/client/outofbandv2"
+	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/peerdid"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/service"
+	"github.com/hyperledger/aries-framework-go/pkg/didcomm/packer"
+	"github.com/hyperledger/aries-framework-go/pkg/didcomm/packer/anoncrypt"
+	"github.com/hyperledger/aries-framework-go/pkg/didcomm/packer/authcrypt"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/decorator"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/transport"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/transport/ws"
+	"github.com/hyperledger/aries-framework-go/pkg/doc/jose"
 	"github.com/hyperledger/aries-framework-go/pkg/framework/aries"
+	"github.com/hyperledger/aries-framework-go/pkg/framework/context"
 	"github.com/hyperledger/aries-framework-go/pkg/kms"
 	"net/http"
 )
 
 func main() {
 
-	didExchangeClient, oobClient, err := createDIDClient(5000)
+	didExchangeClient, oobClient, ctx, err := createDIDClient(5000)
 	if err != nil {
 		panic(err)
 	}
 
-	http.Handle("/invitation", &InvitationHandler{DIDExchangeClient: *didExchangeClient, OOBClient: *oobClient})
+	http.Handle("/invitation", &InvitationHandler{DIDExchangeClient: *didExchangeClient, OOBClient: *oobClient, Provider: *ctx})
 
 	//http.Handle("/invitation", &InvitationHandler{DIDExchangeClient: *didExchangeClient, OOBV2Client: *oobClient})
 	http.ListenAndServe(":5000", nil)
@@ -43,11 +48,12 @@ type OOBV2Client struct {
 type InvitationHandler struct {
 	DIDExchangeClient DIDExchangeClient
 	OOBClient         OOBV2Client
+	Provider          context.Provider
 }
 
-func createDIDClient(port int32) (*DIDExchangeClient, *OOBV2Client, error) {
+func createDIDClient(port int32) (*DIDExchangeClient, *OOBV2Client, *context.Provider, error) {
 
-	ngrokAddress := "86b9-84-63-28-137.eu.ngrok.io"
+	ngrokAddress := "1c24-84-63-28-137.eu.ngrok.io"
 	address := fmt.Sprintf("localhost:%d", port+1)
 	inbound, err := ws.NewInbound(address, "ws://"+ngrokAddress, "", "")
 
@@ -62,6 +68,14 @@ func createDIDClient(port int32) (*DIDExchangeClient, *OOBV2Client, error) {
 		aries.WithKeyAgreementType(kms.NISTP521ECDHKWType),
 		aries.WithStoreProvider(mem.NewProvider()),
 		aries.WithProtocolStateStoreProvider(mem.NewProvider()),
+		aries.WithPacker(
+			func(prov packer.Provider) (packer.Packer, error) {
+				return authcrypt.New(prov, jose.A256CBCHS512)
+			},
+			func(prov packer.Provider) (packer.Packer, error) {
+				return anoncrypt.New(prov, jose.A256GCM)
+			},
+		),
 	)
 	if err != nil {
 		panic(err)
@@ -110,7 +124,7 @@ func createDIDClient(port int32) (*DIDExchangeClient, *OOBV2Client, error) {
 		service.AutoExecuteActionEvent(events)
 	}()
 
-	return &DIDExchangeClient{Client: *routerDIDs}, &OOBV2Client{Client: *outOfBandv2Client}, nil
+	return &DIDExchangeClient{Client: *routerDIDs}, &OOBV2Client{Client: *outOfBandv2Client}, ctx, nil
 }
 
 func (handler *InvitationHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -118,18 +132,29 @@ func (handler *InvitationHandler) ServeHTTP(writer http.ResponseWriter, request 
 	case http.MethodGet:
 
 		// Create route-request message
-		routeRequest, err := json.Marshal(mediator.NewRequest())
+		//routeRequest, err := json.Marshal(mediator.NewRequest())
+		//routeRequest := mediator.NewRequest()
+		inv, err := handler.DIDExchangeClient.CreateInvitation("Router Invitation")
 		if err != nil {
 			panic(err)
 		}
+		fmt.Println(inv.ServiceEndpoint)
+
+		peerDID := peerdid.New(&handler.Provider)
+		didv2, err := peerDID.CreatePeerDIDV2()
+		if err != nil {
+			return
+		}
 
 		oobInvitation, err := handler.OOBClient.CreateInvitation(
-			outofbandv2.WithLabel("Router"),
-			outofbandv2.WithFrom("RouterDID"),
+			outofbandv2.WithFrom(didv2.ID),
+			outofbandv2.WithGoal("connect", "connect"),
+			outofbandv2.WithAccept("didcomm/aip2;env=rfc19", transport.MediaTypeDIDCommV2Profile),
 			outofbandv2.WithAttachments(&decorator.AttachmentV2{
-				ID: uuid.New().String(),
+				ID:          uuid.New().String(),
+				Description: "connect",
 				Data: decorator.AttachmentData{
-					Base64: base64.StdEncoding.EncodeToString(routeRequest),
+					JSON: inv,
 				},
 			}),
 		)
@@ -138,7 +163,16 @@ func (handler *InvitationHandler) ServeHTTP(writer http.ResponseWriter, request 
 			panic(err)
 		}
 
-		fmt.Printf("Created Out of Band Invitation")
+		fmt.Printf("Created Out of Band Invitation \n")
+
+		res, err := handler.OOBClient.AcceptInvitation(oobInvitation)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println(res)
+
+		conn, err := handler.DIDExchangeClient.GetConnection(res)
+		fmt.Println(conn.RecipientKeys)
 
 		response, err := json.Marshal(oobInvitation)
 		if err != nil {
