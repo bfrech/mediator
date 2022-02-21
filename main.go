@@ -1,13 +1,16 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/hyperledger/aries-framework-go/component/storageutil/mem"
 	"github.com/hyperledger/aries-framework-go/pkg/client/didexchange"
+	"github.com/hyperledger/aries-framework-go/pkg/client/mediator"
 	"github.com/hyperledger/aries-framework-go/pkg/client/outofband"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/service"
+	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/decorator"
 	didsvc "github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/didexchange"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/transport"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/transport/ws"
@@ -70,14 +73,19 @@ func createDIDClient(port int32) (*DIDExchangeClient, *context.Provider, error) 
 		panic(err)
 	}
 
+	routerClient, err := mediator.New(ctx)
+	if err != nil {
+		panic(err)
+	}
+
 	go func() {
-		handleEvents(didExClient)
+		handleDIDExchangeEvents(didExClient, routerClient)
 	}()
 
 	return &DIDExchangeClient{Client: *didExClient}, ctx, nil
 }
 
-func handleEvents(didExClient *didexchange.Client) {
+func handleDIDExchangeEvents(didExClient *didexchange.Client, routerClient *mediator.Client) {
 
 	events := make(chan service.DIDCommAction)
 	err := didExClient.RegisterActionEvent(events)
@@ -91,33 +99,56 @@ func handleEvents(didExClient *didexchange.Client) {
 		panic(err)
 	}
 
-	go func() {
-		service.AutoExecuteActionEvent(events)
-	}()
+	err = routerClient.RegisterActionEvent(events)
+	if err != nil {
+		panic(err)
+	}
+
+	err = routerClient.RegisterMsgEvent(states)
+	if err != nil {
+		panic(err)
+	}
+
+	//go func() {
+	//	service.AutoExecuteActionEvent(events)
+	//}()
 
 	for {
 		select {
 		case event := <-events:
 
 			fmt.Printf("Received %s\n", event.Message.Type())
-			switch event.Message.Type() {
-			case didexchange.RequestMsgType:
-				req := &didsvc.Request{}
-				err = event.Message.Decode(req)
-				if err != nil {
-					panic(err)
+
+			switch event.ProtocolName {
+
+			case didexchange.ProtocolName:
+				switch event.Message.Type() {
+				case didexchange.RequestMsgType:
+					req := &didsvc.Request{}
+					err = event.Message.Decode(req)
+					if err != nil {
+						panic(err)
+					}
+
+					props, ok := event.Properties.(didexchange.Event)
+					if !ok {
+						panic("failed to cast event properties (shouldn't happen)")
+					}
+
+					fmt.Printf("Created connectionID %s\n", props.ConnectionID())
+					event.Continue(nil)
+
+				case didexchange.InvitationMsgType:
+					event.Stop(errors.New("Rejected Didexchange Invitation"))
+
 				}
 
-				props, ok := event.Properties.(didexchange.Event)
-				if !ok {
-					panic("failed to cast event properties (shouldn't happen)")
+			case mediator.ProtocolName:
+				fmt.Println("Received a Mediator Event")
+				if event.Message.Type() == mediator.RequestMsgType {
+					event.Continue(nil)
 				}
 
-				fmt.Printf("Created connectionID %s\n", props.ConnectionID())
-				event.Continue(nil)
-
-			case didexchange.InvitationMsgType:
-				event.Stop(errors.New("Rejected Didexchange Invitation"))
 			}
 
 		case state := <-states:
@@ -135,13 +166,13 @@ func (handler *InvitationHandler) ServeHTTP(writer http.ResponseWriter, request 
 	switch request.Method {
 	case http.MethodGet:
 
-		/*
-			peerDID := peerdid.New(&handler.Provider)
-			didv2, err := peerDID.CreatePeerDIDV2()
-			if err != nil {
-				return
-			}
-		*/
+		routeRequest := mediator.NewRequest()
+
+		request, err := json.Marshal(routeRequest)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println(request)
 
 		outOfBandClient, err := outofband.New(&handler.Provider)
 		if err != nil {
@@ -151,11 +182,12 @@ func (handler *InvitationHandler) ServeHTTP(writer http.ResponseWriter, request 
 		inv, err := outOfBandClient.CreateInvitation(
 			nil,
 			outofband.WithLabel("Router"),
-			//outofband.WithAttachments(&decorator.Attachment{
-			//	Data: decorator.AttachmentData{
-			//		Base64: base64.StdEncoding.EncodeToString(response),
-			//	},
-			//}),
+			outofband.WithAttachments(&decorator.Attachment{
+				Data: decorator.AttachmentData{
+					//		JSON: routeRequest,
+					Base64: base64.StdEncoding.EncodeToString(request),
+				},
+			}),
 		)
 		if err != nil {
 			panic(err)
