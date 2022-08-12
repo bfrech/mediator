@@ -1,26 +1,23 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/hyperledger/aries-framework-go/component/storageutil/mem"
 	"github.com/hyperledger/aries-framework-go/pkg/client/didexchange"
 	"github.com/hyperledger/aries-framework-go/pkg/client/mediator"
 	"github.com/hyperledger/aries-framework-go/pkg/client/outofband"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/service"
-	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/decorator"
 	didsvc "github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/didexchange"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/transport"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/transport/ws"
 	"github.com/hyperledger/aries-framework-go/pkg/framework/aries"
 	"github.com/hyperledger/aries-framework-go/pkg/framework/context"
 	"net/http"
+	"os"
 )
 
 func main() {
-
 	didExchangeClient, ctx, err := createDIDClient(5000)
 	if err != nil {
 		panic(err)
@@ -41,7 +38,13 @@ type InvitationHandler struct {
 
 func createDIDClient(port int32) (*DIDExchangeClient, *context.Provider, error) {
 
-	ngrokAddress := fmt.Sprintf("localhost:%d", port+1)
+	hostname, error := os.Hostname()
+	if error != nil {
+		panic(error)
+	}
+	fmt.Printf("Hostname: %s \n", hostname)
+
+	ngrokAddress := fmt.Sprintf("%s:%d", hostname, port+1)
 	inbound, err := ws.NewInbound(ngrokAddress, "ws://"+ngrokAddress, "", "")
 	if err != nil {
 		panic(err)
@@ -50,10 +53,13 @@ func createDIDClient(port int32) (*DIDExchangeClient, *context.Provider, error) 
 	framework, err := aries.New(
 		aries.WithInboundTransport(inbound),
 		aries.WithOutboundTransports(ws.NewOutbound()),
-		aries.WithMediaTypeProfiles([]string{transport.MediaTypeDIDCommV2Profile}),
+		
+		aries.WithMediaTypeProfiles([]string{transport.MediaTypeDIDCommV2Profile, transport.MediaTypeAIP2RFC0587Profile,
+			transport.MediaTypeProfileDIDCommAIP1, transport.MediaTypeAIP2RFC0019Profile}),
 		//aries.WithKeyAgreementType(kms.NISTP384ECDHKWType), --> Leads to Error
-		aries.WithStoreProvider(mem.NewProvider()),
-		aries.WithProtocolStateStoreProvider(mem.NewProvider()),
+		//aries.WithStoreProvider(mem.NewProvider()),
+		//aries.WithProtocolStateStoreProvider(mem.NewProvider()),
+		//aries.WithProtocols(messagepickupSvc.ServiceCreator(), basicmessageSvc.ServiceCreator())
 	)
 	if err != nil {
 		panic(err)
@@ -64,7 +70,6 @@ func createDIDClient(port int32) (*DIDExchangeClient, *context.Provider, error) 
 		panic("Failed to create framework context")
 	}
 
-	fmt.Println("Context created successfully")
 	fmt.Println(ctx.ServiceEndpoint())
 
 	// DID Exchange Client
@@ -73,10 +78,17 @@ func createDIDClient(port int32) (*DIDExchangeClient, *context.Provider, error) 
 		panic(err)
 	}
 
+	// Mediator Client
 	routerClient, err := mediator.New(ctx)
 	if err != nil {
 		panic(err)
 	}
+
+	// Message Pickup Client
+	//messagePickupClient, err := messagepickup.New(ctx)
+	//if err != nil {
+	//	panic(err)
+	//}
 
 	go func() {
 		handleDIDExchangeEvents(didExClient, routerClient)
@@ -108,6 +120,16 @@ func handleDIDExchangeEvents(didExClient *didexchange.Client, routerClient *medi
 	if err != nil {
 		panic(err)
 	}
+
+	//err = messagePickupClient.RegisterActionEvent(events)
+	//if err != nil {
+	//	panic(err)
+	//}
+
+	//err = messagePickupClient.RegisterMsgEvent(states)
+	//if err != nil {
+	//	panic(err)
+	//}
 
 	//go func() {
 	//	service.AutoExecuteActionEvent(events)
@@ -182,12 +204,11 @@ func (handler *InvitationHandler) ServeHTTP(writer http.ResponseWriter, request 
 		inv, err := outOfBandClient.CreateInvitation(
 			nil,
 			outofband.WithLabel("Router"),
-			outofband.WithAttachments(&decorator.Attachment{
-				Data: decorator.AttachmentData{
-					//		JSON: routeRequest,
-					Base64: base64.StdEncoding.EncodeToString(request),
-				},
-			}),
+			//outofband.WithAttachments(&decorator.Attachment{
+			//	Data: decorator.AttachmentData{
+			//		JSON: routeRequest,
+			//	},
+			//}),
 		)
 		if err != nil {
 			panic(err)
