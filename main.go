@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"github.com/hyperledger/aries-framework-go/pkg/client/didexchange"
 	"github.com/hyperledger/aries-framework-go/pkg/client/mediator"
@@ -53,13 +52,8 @@ func createDIDClient(port int32) (*DIDExchangeClient, *context.Provider, error) 
 	framework, err := aries.New(
 		aries.WithInboundTransport(inbound),
 		aries.WithOutboundTransports(ws.NewOutbound()),
-		
-		aries.WithMediaTypeProfiles([]string{transport.MediaTypeDIDCommV2Profile, transport.MediaTypeAIP2RFC0587Profile,
-			transport.MediaTypeProfileDIDCommAIP1, transport.MediaTypeAIP2RFC0019Profile}),
-		//aries.WithKeyAgreementType(kms.NISTP384ECDHKWType), --> Leads to Error
-		//aries.WithStoreProvider(mem.NewProvider()),
-		//aries.WithProtocolStateStoreProvider(mem.NewProvider()),
-		//aries.WithProtocols(messagepickupSvc.ServiceCreator(), basicmessageSvc.ServiceCreator())
+
+		aries.WithMediaTypeProfiles([]string{transport.MediaTypeDIDCommV2Profile}),
 	)
 	if err != nil {
 		panic(err)
@@ -83,12 +77,6 @@ func createDIDClient(port int32) (*DIDExchangeClient, *context.Provider, error) 
 	if err != nil {
 		panic(err)
 	}
-
-	// Message Pickup Client
-	//messagePickupClient, err := messagepickup.New(ctx)
-	//if err != nil {
-	//	panic(err)
-	//}
 
 	go func() {
 		handleDIDExchangeEvents(didExClient, routerClient)
@@ -121,20 +109,6 @@ func handleDIDExchangeEvents(didExClient *didexchange.Client, routerClient *medi
 		panic(err)
 	}
 
-	//err = messagePickupClient.RegisterActionEvent(events)
-	//if err != nil {
-	//	panic(err)
-	//}
-
-	//err = messagePickupClient.RegisterMsgEvent(states)
-	//if err != nil {
-	//	panic(err)
-	//}
-
-	//go func() {
-	//	service.AutoExecuteActionEvent(events)
-	//}()
-
 	for {
 		select {
 		case event := <-events:
@@ -159,10 +133,6 @@ func handleDIDExchangeEvents(didExClient *didexchange.Client, routerClient *medi
 
 					fmt.Printf("Created connectionID %s\n", props.ConnectionID())
 					event.Continue(nil)
-
-				case didexchange.InvitationMsgType:
-					event.Stop(errors.New("Rejected Didexchange Invitation"))
-
 				}
 
 			case mediator.ProtocolName:
@@ -204,11 +174,6 @@ func (handler *InvitationHandler) ServeHTTP(writer http.ResponseWriter, request 
 		inv, err := outOfBandClient.CreateInvitation(
 			nil,
 			outofband.WithLabel("Router"),
-			//outofband.WithAttachments(&decorator.Attachment{
-			//	Data: decorator.AttachmentData{
-			//		JSON: routeRequest,
-			//	},
-			//}),
 		)
 		if err != nil {
 			panic(err)
