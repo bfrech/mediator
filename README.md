@@ -13,6 +13,7 @@ The project uses [Aries-framework-go](https://github.com/hyperledger/aries-frame
 - Golang >= 1.16
 
 ### Run the mediator locally
+
 To run the mediator first use:
 ```
 go mod tidy
