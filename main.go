@@ -12,6 +12,8 @@ import (
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/transport/ws"
 	"github.com/hyperledger/aries-framework-go/pkg/framework/aries"
 	"github.com/hyperledger/aries-framework-go/pkg/framework/context"
+	_ "log"
+	_ "net"
 	"net/http"
 	"os"
 )
@@ -22,7 +24,7 @@ func main() {
 		panic(err)
 	}
 
-	http.Handle("/invitation", &InvitationHandler{DIDExchangeClient: *didExchangeClient, Provider: *ctx})
+	http.Handle("/", &InvitationHandler{DIDExchangeClient: *didExchangeClient, Provider: *ctx})
 	http.ListenAndServe(":5000", nil)
 }
 
@@ -37,14 +39,14 @@ type InvitationHandler struct {
 
 func createDIDClient(port int32) (*DIDExchangeClient, *context.Provider, error) {
 
-	hostname, error := os.Hostname()
-	if error != nil {
-		panic(error)
+	hostname, err := os.Hostname()
+	if err != nil {
+		panic(err)
 	}
 	fmt.Printf("Hostname: %s \n", hostname)
 
-	ngrokAddress := fmt.Sprintf("%s:%d", hostname, port+1)
-	inbound, err := ws.NewInbound(ngrokAddress, "ws://"+ngrokAddress, "", "")
+	address := fmt.Sprintf("%s:%d", hostname, port+1)
+	inbound, err := ws.NewInbound(address, "ws://"+address, "", "")
 	if err != nil {
 		panic(err)
 	}
@@ -52,7 +54,6 @@ func createDIDClient(port int32) (*DIDExchangeClient, *context.Provider, error) 
 	framework, err := aries.New(
 		aries.WithInboundTransport(inbound),
 		aries.WithOutboundTransports(ws.NewOutbound()),
-
 		aries.WithMediaTypeProfiles([]string{transport.MediaTypeDIDCommV2Profile}),
 	)
 	if err != nil {
